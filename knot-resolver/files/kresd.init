@@ -1,0 +1,244 @@
+#!/bin/sh /etc/rc.common
+
+START=61
+STOP=00
+
+USE_PROCD=1
+PROG=/usr/bin/kresd
+CONFIGFILE=/tmp/kresd.config
+ROOTKEYFILE=/etc/root.keys
+DEFAULT_RUNDIR=/tmp/kresd
+HINTS_CONFIG=$DEFAULT_RUNDIR/hints.tmp
+DHCP_SCRIPT=/etc/kresd/dhcp_host_domain_ng.sh
+STATIC_DOMAINS=1
+
+# Check the /etc/unbound/root.keys is reasonable and try to fix it with given command
+check_root_key() {
+	# Don't do anything if it looks OK
+	grep -qE '[[:space:]](DNSKEY|DS|TYPE[[:digit:]][[:digit:]])[[:space:]]' $ROOTKEYFILE && return
+	# Not OK -> run the command and hope for the best
+	echo "Trying to restore broken $ROOTKEYFILE with command $@"
+	eval "$@"
+}
+
+service_triggers() {
+        procd_add_reload_trigger "dhcp"
+}
+
+add_listen_addr() {
+	local addr="$1"
+	local port="$2"
+	[ "$addr" == "::0" ] && addr="::"
+	procd_append_param command -a "$addr#$port"
+}
+
+init_header() {
+	echo "--Automatically generated file; DO NOT EDIT" > $CONFIGFILE
+	echo "modules = {" >> $CONFIGFILE
+	config_get_bool prefetch common prefetch 0
+	echo "    'hints > iterate'"  >> $CONFIGFILE
+	echo "  , 'policy'" >> $CONFIGFILE
+	if [ "$prefetch" \!= 0 ]; then
+		echo "  , 'stats'" >> $CONFIGFILE
+		echo "  , predict = {" >> $CONFIGFILE
+		echo "        window = 30 -- 30 minutes sampling window" >> $CONFIGFILE
+		echo "      , period = 24*(60/30) -- track last 24 hours" >> $CONFIGFILE
+		echo "  }" >> $CONFIGFILE
+	fi
+	echo "}" >> $CONFIGFILE
+
+	# clear hints file
+	echo "" > $HINTS_CONFIG
+}
+
+set_param_func() {
+	local func_name="$1"
+	local val="$2"
+	echo "$func_name($val)">>$CONFIGFILE
+}
+
+set_param_var() {
+	local name="$1"
+	local val="$2"
+	echo "$name=$val">>$CONFIGFILE
+}
+
+include_custom_config() {
+	local custom_config_path
+	config_get custom_config_path "kresd" include_config
+	if [ -e "$custom_config_path" ]; then
+		echo "" >> $CONFIGFILE
+		echo "--- Included custom configuration file from: ---" >> $CONFIGFILE
+		echo "--- $custom_config_path " >> $CONFIGFILE
+		cat $custom_config_path >> $CONFIGFILE
+	else
+		[ -z "$custom_config_path" ] || echo "Warning! Kresd custom config file  $custom_config_path doesn't exist."
+	fi
+}
+
+load_uci_config_common() {
+	local interface keyfile verbose port msg_buffer_size net_ipv4 net_ipv6 msg_cache_size do_forward ignore_root_key
+	local section="common"
+
+	# port
+	config_get port "$section" port
+
+	# list of listen addresses
+	config_list_foreach "$section" interface add_listen_addr $port
+
+	# ignore keyfile
+	config_get_bool ignore_root_key "$section" ignore_root_key 0
+
+	if [ "$ignore_root_key" = "0" ]; then
+		#keyfile
+		config_get keyfile "$section" keyfile
+		if [ -n "$keyfile" ]; then
+			ROOTKEYFILE=$keyfile
+			check_root_key cert-backup -x $ROOTKEYFILE
+			procd_append_param command -k "$keyfile"
+		fi
+	fi
+
+	# verbosity
+	config_get verbose "$section" verbose 0
+	[ "$verbose" -ge 1 ] && procd_append_param command -v
+
+	# EDNS payload
+	config_get msg_buffer_size "$section" msg_buffer_size
+	[ "$msg_buffer_size" -ge 512 ] && set_param_func "net.bufsize" "$msg_buffer_size"
+
+	# ipv4
+	config_get_bool net_ipv4 "$section" net_ipv4
+	net_ipv4_bool=$(if test "$net_ipv4" -eq "1"; then echo true; else echo false; fi)
+	set_param_var "net.ipv4" "$net_ipv4_bool"
+
+	# ipv6
+	config_get_bool net_ipv6 "$section" net_ipv6
+	net_ipv6_bool=$(if test "$net_ipv6" -eq "1"; then echo true; else echo false; fi)
+	set_param_var "net.ipv6" "$net_ipv6_bool"
+
+	# msg_cache_size
+	config_get msg_cache_size "$section" msg_cache_size
+	conv_msg_cache_size=$(echo "$msg_cache_size"|sed -e 's/k$/*kB/gi' -e 's/M$/*MB/gi' -e 's/G$/*GB/gi')
+	set_param_func "cache.open" "$conv_msg_cache_size"
+	set_param_func "cache.clear" ""
+
+	config_get_bool do_forward "$section" forward_upstream 1
+	if [ "$do_forward" = "1" ] ; then
+		local SERVERS
+		SERVERS=$(sed -ne 's/^nameserver \(.*\)/\1/p' /tmp/resolv.conf.auto | sort -u |head -n 4)
+		if [ "$SERVERS" ] ; then
+			echo "policy.add(policy.all(policy.FORWARD({">>$CONFIGFILE
+			for SERVER in $SERVERS ; do
+				echo "	'$SERVER',">>$CONFIGFILE
+			done
+			echo "})))">>$CONFIGFILE
+		fi
+		md5sum /tmp/resolv.conf.auto | cut -f1 -d\ >/tmp/resolv.conf.auto.last.md5
+	fi
+
+	# enable static local domains
+	config_get_bool STATIC_DOMAINS "$section" static_domains 1
+
+	# include custom kresd config
+	include_custom_config
+}
+
+get_local_domain() {
+	config_get DOMAIN $1 local
+	[ -z "$DOMAIN" ] || DOMAIN="`echo "$DOMAIN" | sed 's|/||g'`"
+}
+
+set_local_host() {
+	config_get NAME $1 name
+	config_get IP $1 ip
+	if [ -n "$NAME" ] && [ -n "$DOMAIN" ] && [ -n "$IP" ]; then
+		echo "$IP $NAME.$DOMAIN" >> $HINTS_CONFIG
+	fi
+}
+
+set_dnsmasq_dhcp_script() {
+	uci_set dhcp $1 dhcpscript $2
+	uci_commit dhcp
+}
+
+add_rpz_file() {
+	local rpz_file="$1"
+	if [ -e "$rpz_file" ]; then
+		echo "policy.add(policy.rpz(policy.DENY, '$rpz_file'))" >>$CONFIGFILE
+	fi
+}
+
+add_hostname_config() {
+	local hostname_config="$1"
+	if [ -e "$hostname_config" ] && [ "$STATIC_DOMAINS" == "1" ]; then
+		cat $hostname_config >> $HINTS_CONFIG
+	fi
+}
+
+load_uci_config_kresd() {
+	local addr config keyfile forks verbose rundir log_stderr log_stdout dynamic_domains hostname_config
+	local section="kresd"
+
+	# knot-resolver config
+	procd_append_param command -c "$CONFIGFILE"
+
+	# number of forks
+	config_get forks "$section" forks 1
+	procd_append_param command -f "$forks"
+
+	# rundir
+	config_get rundir "$section" rundir "$DEFAULT_RUNDIR"
+	[ ! -d "$rundir" ] && mkdir -p "$rundir"
+	procd_append_param command "$rundir"
+
+	# procd stdout/err logging
+	config_get_bool log_stderr "$section" log_stderr  1
+	procd_set_param stderr $log_stderr
+	config_get_bool log_stdout "$section" log_stdout  1
+	procd_set_param stdout $log_stdout
+
+	# hostnames for local DNS
+	config_list_foreach "$section" hostname_config add_hostname_config
+
+	# enable dynamic local domains
+	config_get_bool dynamic_domains "$section" dynamic_domains 0
+
+	#add rpz files
+	config_list_foreach "$section" rpz_file add_rpz_file
+
+	config_load dhcp
+	config_foreach get_local_domain dnsmasq
+	if [ "$STATIC_DOMAINS" == "1" ]; then
+		config_foreach set_local_host host
+		config_foreach set_local_host domain
+	fi
+	if [ "$dynamic_domains" == "1" ]; then
+		config_foreach set_dnsmasq_dhcp_script dnsmasq "$DHCP_SCRIPT"
+	fi
+	config_load resolver
+
+	# load hints config
+	set_param_func "hints.config" "'$HINTS_CONFIG'"
+}
+
+run_instance() {
+	procd_open_instance
+	procd_set_param file /etc/config/resolver
+	procd_set_param command "$PROG"
+	init_header
+	load_uci_config_kresd
+	load_uci_config_common
+	procd_close_instance
+}
+
+start_service() {
+	config_load resolver
+	run_instance
+}
+
+reload_service()
+{
+	stop
+	start
+}
