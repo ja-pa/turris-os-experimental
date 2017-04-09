@@ -1,4 +1,6 @@
 language: erlang
+before_install:
+  - sudo apt-get install -y libc6
 script:
   - cd scripts
   - sudo bash build_all.sh
