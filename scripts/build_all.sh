@@ -18,7 +18,7 @@ cp_packages() {
 build_all() {
 	export PATH=$PATH:$BUILD_DIR/turris/$SDK/staging_dir/toolchain-arm_cortex-a9+vfpv3_gcc-4.8-linaro_musl-1.1.15_eabi/bin
 
-	USE_CCACHE=n make CC=arm-openwrt-linux-gcc CXX=arm-openwrt-linux-g++ LD=arm-openwrt-linux-ld V=s -C $BUILD_DIR/turris/$SDK
+	USE_CCACHE=n make CC=arm-openwrt-linux-gcc CXX=arm-openwrt-linux-g++ LD=arm-openwrt-linux-ld -C $BUILD_DIR/turris/$SDK
 }
 
 prepare_sdk
