@@ -12,7 +12,7 @@ prepare_sdk() {
 }
 
 cp_packages() {
-	rsync -av --progress $BUILD_DIR/../ $BUILD_DIR/turris/$SDK/package --exclude scripts
+	rsync -av --progress $BUILD_DIR/../ $BUILD_DIR/turris/$SDK/package --exclude scripts --exclude=.git
 }
 
 build_all() {
