@@ -1,3 +1,4 @@
 language: erlang
 script:
-  - sudo bash cd scripts && build_all.sh
+  - cd scripts
+  - sudo bash build_all.sh
