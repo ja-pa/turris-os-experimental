@@ -34,7 +34,7 @@ build_all() {
 }
 
 cp_binaries() {
-	mkdir $BUILD_DIR/bin
+	[ -d "$BUILD_DIR/bin" ] || mkdir $BUILD_DIR/bin
 	rsync -av --progress $BUILD_DIR/turris/$SDK/bin/mvebu-musl/packages/base/ $BUILD_DIR/bin
 }
 
