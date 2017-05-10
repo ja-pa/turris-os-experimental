@@ -54,7 +54,7 @@ define Build/Patch
 	       -e 's/\(.*find_lib,libmemcached.*\)/HAS_libmemcached := no/' Makefile
 endef
 
-define Package/knot-resolver-fullforward/install
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/*bin/kresd $(1)/usr/bin/
 
