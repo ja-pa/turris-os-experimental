@@ -27,7 +27,15 @@ update_youtube_dl() {
 	sed -i "s|PKG_VERSION:=.*|PKG_VERSION:=${last_tag}|" $PKG_DIR/youtube-dl/Makefile
 }
 
+commit_changes() {
+	for item in $(git status |grep "modified"|grep -v "build_all.sh"|grep -v "update_package.sh"|awk '{print $2}')
+	do
+	name=$(echo $item|awk -F'/' '{print $2}')
+	git commit $item -m "$name:update package"
+	done
+}
 
 update_knot_resolver_forward
 update_knot_resolver
 update_youtube_dl
+commit_changes
