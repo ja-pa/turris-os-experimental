@@ -1,2 +1,7 @@
 scripts
 .git
+adblock
+gcc
+knot-resolver-fullforward
+repo-experimental
+youtube-dl
